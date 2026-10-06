@@ -69,6 +69,7 @@ FE_RUNG_COST_S = 300.0         # declared cost per action before any run has bee
 # it with the published VARC-3 threshold (moderate or worse: >= 30 mL/beat). What is declared
 # here is only the model-form error of that prediction, as a standard deviation of log(RVol):
 # PLACEHOLDERS until compared against echocardiographic grading in a cohort.
-PVL_0D_SIGMA_LOG = 0.7          # 0D strips ignore circumferential flow and jet geometry
+PVL_0D_SIGMA_LOG = 1.0          # 0D strips ignore circumferential flow and jet geometry; raised from 0.7
+                                # after the first CFD comparison under-predicted by x2.75 (docs/cfd_patient_ct0091.md)
 PVL_CFD_SIGMA_LOG = 0.4         # 3D CFD: remaining error is the skirt and leaflet modelling
 PVL_RVOL_FLOOR_ML = 0.05        # below this the prediction is "no leak"
