@@ -82,6 +82,8 @@ tavr_decide/
   grammar.py      reversibility grammar; Evolut-like and balloon-expandable instances
   anatomy.py      Uncertain measurements, sampling, shifted copies for certificates
   modules.py      Module protocol; ConductionProxy (dMSID), PVLProxy (upper-LVOT calcium), PluggableModule
+  geometry.py     Geometry holon: CT + lumen mask + landmarks -> Anatomy with uncertainty
+                  (annulus plane/section, upper-LVOT calcium, coronary heights; Slicer markups; TotalSegmentator wrapper)
   holon.py        Holon (creaon, genon, rungs, parts, meet, narrate), Rung, leaf
   decision.py     evaluate, margin_certificate, evppi_of_module, value_of_computation, select_modules,
                   tolerance_contracts, holarchic_select
