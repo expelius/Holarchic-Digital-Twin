@@ -1,0 +1,119 @@
+"""Mesh validity and FEBio input structure. These tests do not need the solver."""
+import xml.etree.ElementTree as ET
+
+import numpy as np
+import pytest
+import scipy.sparse as sp
+import scipy.sparse.csgraph as cg
+
+from tavr_decide.frame import FrameSpec, self_expanding_frame
+from tavr_decide.fe.lattice import lattice_hex_mesh, cylinder_hex_mesh, hex_signed_volumes
+from tavr_decide.fe.febio import DeploymentParams, assemble, write_deployment, read_node_positions
+
+RING = FrameSpec("ring", "self-expanding", 12, 2, 10.0, [(0, 13.0), (1, 13.0)], 0.30, 0.25)
+
+
+def n_components(mesh) -> int:
+    E = mesh.elems
+    rows, cols = np.repeat(E, 8, axis=1).ravel(), np.tile(E, (1, 8)).ravel()
+    g = sp.coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(mesh.nodes),) * 2)
+    _, lab = cg.connected_components(g, directed=False)
+    return len(np.unique(lab[np.unique(E)]))
+
+
+@pytest.mark.parametrize("spec", [RING, self_expanding_frame(26, n_cells_circ=12, n_rows=5).spec])
+def test_lattice_mesh_is_valid_connected_and_oriented(spec):
+    m = lattice_hex_mesh(spec, n_along=4, n_thick=1)
+    assert hex_signed_volumes(m.nodes, m.elems).min() > 0, "all hexes must have positive volume"
+    assert n_components(m) == 1, "struts must share nodes with their junctions"
+    assert len(np.unique(m.elems)) == len(m.nodes), "no orphan nodes"
+    for faces, sign in ((m.outer_faces, 1), (m.inner_faces, -1)):
+        p = m.nodes[faces]
+        nrm = np.cross(p[:, 1] - p[:, 0], p[:, 3] - p[:, 0]); c = p.mean(1)
+        s = np.einsum("ij,ij->i", nrm, np.c_[c[:, 0], c[:, 1], 0 * c[:, 0]])
+        assert (sign * s > 0).all()
+    r = np.linalg.norm(m.nodes[:, :2], axis=1)
+    t = spec.strut_thickness_mm
+    rmin, rmax = min(p[1] for p in spec.profile), max(p[1] for p in spec.profile)
+    # nodes sample the profile at lattice heights, so they stay within its bounds (± half thickness)
+    assert r.min() >= rmin - t / 2 - 1e-6 and r.max() <= rmax + t / 2 + 1e-6
+
+
+def test_strut_width_too_large_is_rejected():
+    bad = FrameSpec("bad", "self-expanding", 40, 2, 10.0, [(0, 5.0), (1, 5.0)], 0.6, 0.25)
+    with pytest.raises(ValueError):
+        lattice_hex_mesh(bad)
+
+
+def test_cylinder_mesh_normals_and_volume():
+    c = cylinder_hex_mesh(11.0, 2.0, 0.0, 10.0, n_theta=48, n_z=4, n_r=1)
+    assert hex_signed_volumes(c.nodes, c.elems).min() > 0
+    p = c.nodes[c.inner_faces]; n = np.cross(p[:, 1] - p[:, 0], p[:, 3] - p[:, 0]); ctr = p.mean(1)
+    assert (np.einsum("ij,ij->i", n, np.c_[ctr[:, 0], ctr[:, 1], 0 * ctr[:, 0]]) < 0).all()   # into the lumen
+
+
+def test_deployment_input_is_well_formed(tmp_path):
+    frame = lattice_hex_mesh(RING, n_along=3, n_thick=1)
+    vessel = cylinder_hex_mesh(11.0, 2.0, -3.0, 13.0, n_theta=24, n_z=4)
+    sleeve = cylinder_hex_mesh(13.45, 0.5, -1.0, 11.0, n_theta=24, n_z=3)
+    A = assemble(frame, vessel, sleeve)
+    assert all(len(A.node_sets[k]) >= 1 for k in ("frame_a0", "frame_a90", "frame_a180"))
+    f = write_deployment(tmp_path / "d.feb", A, DeploymentParams(sleeve_r0=13.45))
+    root = ET.parse(f).getroot()
+    assert root.attrib["version"] == "4.0"
+    assert len(root.find("Mesh/Nodes")) == len(A.nodes)
+    assert [e.attrib["name"] for e in root.findall("Mesh/Elements")] == ["frame", "vessel", "sleeve"]
+    assert {s.attrib["name"] for s in root.findall("Mesh/Surface")} == {"frame_outer", "vessel_inner", "sleeve_inner"}
+    steps = root.findall("Step/step")
+    assert [s.attrib["name"] for s in steps] == ["crimp", "release"]
+    assert steps[1].find("Contact/contact").attrib["surface_pair"] == "frame_vessel"
+    assert root.find("Contact/contact").attrib["surface_pair"] == "frame_sleeve"
+    # the sleeve's radial map has one value per sleeve node and unit norm
+    ux = [float(n.text) for n in root.find("MeshData/NodeData[@name='sleeve_ux']")]
+    uy = [float(n.text) for n in root.find("MeshData/NodeData[@name='sleeve_uy']")]
+    assert len(ux) == len(A.node_sets["sleeve_all"]) and np.allclose(np.hypot(ux, uy), 1.0, atol=1e-6)
+    assert "min_residual" in f.read_text(encoding="ISO-8859-1")
+
+
+def test_frame_without_axis_aligned_junctions_is_rejected():
+    spec = FrameSpec("odd", "self-expanding", 15, 2, 10.0, [(0, 13.0), (1, 13.0)], 0.30, 0.25)
+    frame = lattice_hex_mesh(spec, n_along=2)
+    with pytest.raises(ValueError):
+        assemble(frame, cylinder_hex_mesh(11, 2, -3, 13, 24, 2), cylinder_hex_mesh(13.45, 0.5, -1, 11, 24, 2))
+
+
+def test_node_log_parser(tmp_path):
+    p = tmp_path / "n.txt"
+    p.write_text("*Step  = 1\n*Time  = 0.5\n*Data  = x;y;z\n1 1.0 0.0 0.0\n2 0.0 1.0 0.0\n"
+                 "*Step  = 2\n*Time  = 1\n*Data  = x;y;z\n1 2.0 0.0 0.0\n2 0.0 2.0 0.0\n", encoding="latin-1")
+    d = read_node_positions(p)
+    assert sorted(d) == [0.5, 1.0] and d[1.0].shape == (2, 4) and d[1.0][0, 1] == 2.0
+
+
+# --- integration: needs the FEBio binary (WSL on Windows, or febio4 on PATH) -----------------
+def _febio_available() -> bool:
+    import os, shutil, subprocess
+    from tavr_decide.fe.febio import FEBIO_WSL
+    try:
+        if os.name == "nt":
+            r = subprocess.run(["wsl", "-d", "Ubuntu-24.04", "-u", "root", "--", "test", "-x", FEBIO_WSL],
+                               capture_output=True, timeout=60)
+            return r.returncode == 0
+        return shutil.which(os.environ.get("FEBIO", "febio4")) is not None
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _febio_available(), reason="FEBio binary not available")
+def test_ring_deployment_reaches_equilibrium_between_vessel_and_free_radius(tmp_path):
+    from tavr_decide.fe.deploy import run_deployment
+    spec = FrameSpec("ring", "self-expanding", 8, 2, 10.0, [(0, 13.0), (1, 13.0)], 0.30, 0.25)
+    res = run_deployment(spec, vessel_radius_mm=11.0, workdir=tmp_path, vessel_z=(-3.0, 13.0), n_along=2,
+                         n_theta=48, n_z_vessel=6, n_r_vessel=2, n_bands=3, timeout_s=900)
+    assert res.normal_termination, res.summary()
+    assert res.times[-1] == pytest.approx(2.0)
+    r = res.band_radius_deployed
+    assert np.all(r > 11.0) and np.all(r < 13.0), "deployed frame must sit between the vessel and its free radius"
+    assert res.equilibrium_drift_mm < 0.01, "the frame must be at rest once the sleeve has left"
+    crimped = res.mean_radius_t[np.argmin(np.abs(res.times - 1.0))]
+    assert crimped < 11.0, "the crimped frame must clear the vessel before release"
