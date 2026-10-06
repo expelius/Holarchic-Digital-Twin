@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .channel import GapMap
+from .channel import GapMap, H_SEAL_MM
 
 MMHG = 1333.22                  # dyn/cm^2
 RHO = 1.06                      # g/cm^3
@@ -59,7 +59,7 @@ def grade_of(rvol_ml: float) -> str:
 
 
 def pvl_lumped(g: GapMap, dp_mmhg: float = DP_DIASTOLE_MMHG, t_diastole_s: float = T_DIASTOLE_S,
-               rho: float = RHO, mu: float = MU, k_jet: float = K_JET, h_closed_mm: float = 0.02) -> PVLHydraulics:
+               rho: float = RHO, mu: float = MU, k_jet: float = K_JET, h_closed_mm: float = H_SEAL_MM) -> PVLHydraulics:
     dP = dp_mmhg * MMHG
     nz, nt = g.r_skirt.shape
     dth = 2 * np.pi / nt

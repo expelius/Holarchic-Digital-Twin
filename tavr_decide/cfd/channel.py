@@ -7,9 +7,8 @@ the wall is the deformed inner surface of the landing zone. Both are expressed a
 fields over (angle, height) in the annulus-aligned local frame, and the channel height
 h(theta, z) = r_wall - r_skirt.
 
-Where the frame presses into the wall (contact penalty allows a little penetration) the
-channel is closed; it is kept at a minimum height so the structured mesh stays valid, and
-that height carries negligible flow (resistance goes as h^-3).
+Where the frame presses into the wall the channel is closed. Below ``H_SEAL_MM`` a cell is
+treated as contact by both the 0D and the CFD rung: it is not fluid, its faces are walls.
 
 Declared simplifications: the skirt height is a placeholder fraction of the frame; the
 native leaflets and their calcium are not in the fluid domain (they would partly seal the
@@ -24,6 +23,7 @@ from scipy.interpolate import griddata
 
 SKIRT_ROWS = 1.5          # PLACEHOLDER: skirt covers 1.5 cell rows from the inflow edge
 H_MIN_MM = 0.05           # closed channel kept at this height (meshing only)
+H_SEAL_MM = 0.10          # thinner than this is contact, not fluid (used by both 0D and CFD)
 
 
 @dataclass
@@ -107,15 +107,58 @@ class ChannelMesh:
     face_elems: dict            # name -> (F,) owning element ids
 
 
-def channel_mesh(g: GapMap, n_h: int = 4, h_min_mm: float = H_MIN_MM, scale: float = 0.1) -> ChannelMesh:
+def fluid_cells(g: GapMap, h_seal_mm: float | None = H_SEAL_MM) -> np.ndarray:
+    """Cells (k, i) between heights k..k+1 and angles i..i+1 that are fluid AND belong to a
+    component connecting the ventricular (k = 0) to the aortic (k = nz-2) side.
+    ``h_seal_mm=None`` makes every cell fluid (uniform gaps, verification)."""
+    nz, nt = g.r_skirt.shape
+    if h_seal_mm is None:
+        return np.ones((nz - 1, nt), dtype=bool)
+    hk = g.h
+    corner_min = np.minimum.reduce([hk[:-1, :], hk[1:, :], np.roll(hk[:-1, :], -1, axis=1),
+                                    np.roll(hk[1:, :], -1, axis=1)])
+    fluid = corner_min > h_seal_mm
+    cells = list(zip(*np.nonzero(fluid)))
+    parent = {c: c for c in cells}
+
+    def root(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for (k, i) in cells:                              # union with upper and next-angle neighbours
+        for (kk, ii) in ((k + 1, i), (k, (i + 1) % nt)):
+            if kk < nz - 1 and fluid[kk, ii]:
+                a, b = root((k, i)), root((kk, ii))
+                if a != b:
+                    parent[a] = b
+    roots = {c: root(c) for c in cells}
+    through = {roots[c] for c in cells if c[0] == 0} & {roots[c] for c in cells if c[0] == nz - 2}
+    keep = np.zeros_like(fluid)
+    for c in cells:
+        if roots[c] in through:
+            keep[c] = True
+    return keep
+
+
+def channel_mesh(g: GapMap, n_h: int = 4, h_min_mm: float = H_MIN_MM, scale: float = 0.1,
+                 h_seal_mm: float | None = H_SEAL_MM) -> ChannelMesh:
     """Structured hexahedral mesh of the channel, periodic in angle; ``scale`` converts mm to
     the solver units (0.1: centimetres, the usual cgs choice for cardiovascular CFD).
 
+    Only the cells returned by :func:`fluid_cells` are meshed: contact cells and fluid pockets
+    that do not connect the two sides are left out (the pockets carry no leak and would leave
+    the pressure undetermined).
+
     Faces: 'aortic' (top, flow comes in during diastole), 'ventricular' (bottom, flow leaves),
-    'skirt' (inner wall), 'wall' (outer wall).
+    'skirt' (inner wall), 'wall' (outer wall), 'seal' (contact boundaries, no slip).
     """
     nz, nt = g.r_skirt.shape
     h = np.maximum(g.h, h_min_mm)
+    keep = fluid_cells(g, h_seal_mm)
+    if not keep.any():
+        raise ValueError("the channel is sealed: no fluid path from the aortic to the ventricular side")
 
     def nid(k, i, j):              # k: z level, i: theta, j: layer across the gap
         return (k * nt + (i % nt)) * (n_h + 1) + j
@@ -126,36 +169,57 @@ def channel_mesh(g: GapMap, n_h: int = 4, h_min_mm: float = H_MIN_MM, scale: flo
             for j in range(n_h + 1):
                 r = g.r_skirt[k, i] + h[k, i] * j / n_h
                 nodes[nid(k, i, j)] = (r * np.cos(g.theta[i]), r * np.sin(g.theta[i]), g.z[k])
-    elems, faces, owners = [], {"aortic": [], "ventricular": [], "skirt": [], "wall": []}, \
-        {"aortic": [], "ventricular": [], "skirt": [], "wall": []}
+    names = ("aortic", "ventricular", "skirt", "wall", "seal")
+    elems, faces, owners = [], {n: [] for n in names}, {n: [] for n in names}
+
+    def add(name, quad, e):
+        faces[name].append(quad); owners[name].append(e)
+
     for k in range(nz - 1):
         for i in range(nt):
+            if not keep[k, i]:
+                continue
             for j in range(n_h):
                 a = [nid(k, i, j), nid(k, i, j + 1), nid(k, i + 1, j + 1), nid(k, i + 1, j)]
                 b = [nid(k + 1, i, j), nid(k + 1, i, j + 1), nid(k + 1, i + 1, j + 1), nid(k + 1, i + 1, j)]
                 e = len(elems)
                 elems.append(a + b)
                 if k == 0:
-                    faces["ventricular"].append(a); owners["ventricular"].append(e)
+                    add("ventricular", a, e)
+                elif not keep[k - 1, i]:
+                    add("seal", a, e)
                 if k == nz - 2:
-                    faces["aortic"].append(b); owners["aortic"].append(e)
+                    add("aortic", b, e)
+                elif not keep[k + 1, i]:
+                    add("seal", b, e)
                 if j == 0:
-                    faces["skirt"].append([a[0], a[3], b[3], b[0]]); owners["skirt"].append(e)
+                    add("skirt", [a[0], a[3], b[3], b[0]], e)
                 if j == n_h - 1:
-                    faces["wall"].append([a[1], b[1], b[2], a[2]]); owners["wall"].append(e)
-    nodes *= scale
+                    add("wall", [a[1], b[1], b[2], a[2]], e)
+                if not keep[k, (i - 1) % nt]:
+                    add("seal", [a[0], a[1], b[1], b[0]], e)
+                if not keep[k, (i + 1) % nt]:
+                    add("seal", [a[3], b[3], b[2], a[2]], e)
     E = np.array(elems, dtype=int)
+    used = np.unique(E)
+    remap = -np.ones(len(nodes), dtype=int)
+    remap[used] = np.arange(len(used))
+    nodes = nodes[used] * scale
+    E = remap[E]
     from ..fe.lattice import hex_signed_volumes
     vol = hex_signed_volumes(nodes, E)
     if (vol < 0).any():
         E[vol < 0] = E[vol < 0][:, [0, 3, 2, 1, 4, 7, 6, 5]]
-    out = {}
+    out, own_out = {}, {}
     centre = nodes[E].mean(axis=1)
-    for name, F in faces.items():
-        F = np.array(F, dtype=int); own = np.array(owners[name], dtype=int)
+    for name in names:
+        if not faces[name]:
+            continue
+        F = remap[np.array(faces[name], dtype=int)]
+        own = np.array(owners[name], dtype=int)
         p = nodes[F]
         n = np.cross(p[:, 1] - p[:, 0], p[:, 3] - p[:, 0])
         inward = np.einsum("ij,ij->i", n, centre[own] - p.mean(axis=1)) > 0
         F[inward] = F[inward][:, [0, 3, 2, 1]]
-        out[name] = F
-    return ChannelMesh(nodes, E, out, {k: np.array(v, dtype=int) for k, v in owners.items()})
+        out[name], own_out[name] = F, own
+    return ChannelMesh(nodes, E, out, own_out)

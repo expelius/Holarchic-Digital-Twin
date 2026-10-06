@@ -43,7 +43,7 @@ def test_a_strip_sealed_anywhere_carries_no_flow_and_grades_are_varc3():
 
 def test_channel_mesh_is_valid_with_outward_faces():
     g = uniform_gap(0.5, nt=24, nz=6)
-    m = channel_mesh(g, n_h=3)
+    m = channel_mesh(g, n_h=3, h_seal_mm=None)
     assert hex_signed_volumes(m.nodes, m.elems).min() > 0
     assert len(m.elems) == 24 * 3 * 5
     centre = m.nodes[m.elems].mean(1)
@@ -71,3 +71,26 @@ def test_svmp_case_files_are_well_formed(tmp_path):
     vtp = ET.parse(tmp_path / "mesh" / "mesh-surfaces" / "aortic.vtp").getroot().find("PolyData/Piece")
     owners = [int(v) for v in vtp.find("CellData/DataArray").text.split()]
     assert len(owners) == len(m.faces["aortic"]) and min(owners) >= 1 and max(owners) <= len(m.elems)
+
+
+def test_contact_cells_become_walls_and_dead_pockets_are_dropped():
+    from tavr_decide.cfd.channel import fluid_cells
+    g = uniform_gap(0.5, nt=24, nz=7)
+    rw = g.r_wall.copy()
+    rw[3, :12] = g.r_skirt[3, :12]                 # half the circumference in contact at mid-height
+    gm = GapMap(g.theta, g.z, g.r_skirt, rw)
+    m = channel_mesh(gm, n_h=2)
+    assert "seal" in m.faces and len(m.faces["seal"]) > 0
+    assert hex_signed_volumes(m.nodes, m.elems).min() > 0
+    assert len(np.unique(m.elems)) == len(m.nodes)                   # no orphan nodes
+    assert len(m.elems) < len(channel_mesh(g, n_h=2).elems)
+    # a pocket closed above and below carries no leak and is removed
+    rw2 = g.r_wall.copy()
+    rw2[1, 0:6] = g.r_skirt[1, 0:6]; rw2[5, 0:6] = g.r_skirt[5, 0:6]
+    rw2[1:6, 0] = g.r_skirt[1:6, 0]; rw2[1:6, 6] = g.r_skirt[1:6, 6]
+    keep = fluid_cells(GapMap(g.theta, g.z, g.r_skirt, rw2))
+    assert not keep[2:4, 1:5].any()
+    # sealed all around at one height: no path, and the mesher says so
+    rw3 = g.r_wall.copy(); rw3[3, :] = g.r_skirt[3, :]
+    with pytest.raises(ValueError):
+        channel_mesh(GapMap(g.theta, g.z, g.r_skirt, rw3), n_h=2)

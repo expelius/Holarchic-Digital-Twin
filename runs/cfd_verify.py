@@ -10,7 +10,7 @@ h, r, L, dp = 0.3, 12.0, 10.0, 0.5            # mm, mm, mm, mmHg
 nt, nz = 48, 11
 th = (np.arange(nt) + 0.5) * 2 * np.pi / nt; z = np.linspace(0, L, nz)
 g = GapMap(th, z, np.full((nz, nt), r), np.full((nz, nt), r + h))
-m = channel_mesh(g, n_h=n_h)
+m = channel_mesh(g, n_h=n_h, h_seal_mm=None)
 rm = (r + h / 2) / 10
 q_an = 2 * np.pi * rm * (h / 10) ** 3 * dp * MMHG / (12 * MU * L / 10)
 q_0d = pvl_lumped(g, dp_mmhg=dp).flow_ml_s
