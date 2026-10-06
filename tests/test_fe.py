@@ -179,3 +179,11 @@ def test_fe_links_are_monotone_and_anchored():
     assert conduction_link(C.FE_COND_W0_MM) == pytest.approx(C.DMSID_RISK_AT_CUTOFF)
     assert conduction_link(1.5) > conduction_link(0.1)
     assert pvl_link(C.FE_PVL_G0_MM2) == pytest.approx(C.PVL_RISK_AT_CUTOFF) and pvl_link(10.0) > pvl_link(0.0)
+
+
+def test_pvl_risk_from_rvol_is_anchored_at_the_varc3_threshold():
+    from tavr_decide.fe.rungs import pvl_risk_from_rvol
+    assert pvl_risk_from_rvol(30.0, 0.7) == pytest.approx(0.5)
+    assert pvl_risk_from_rvol(1.0, 0.7) < 0.01 and pvl_risk_from_rvol(120.0, 0.7) > 0.95
+    assert pvl_risk_from_rvol(0.0, 0.7) == pvl_risk_from_rvol(0.05, 0.7)       # floor, no log(0)
+    assert pvl_risk_from_rvol(15.0, 0.4) < pvl_risk_from_rvol(15.0, 0.7)        # tighter model, sharper grading

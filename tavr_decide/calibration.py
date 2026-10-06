@@ -63,3 +63,12 @@ FE_PVL_SLOPE_PER_MM2 = 0.3     # logit change per mm^2 of gap area
 # and its indices are reported as mechanics, not as risk, until calibration against a cohort.
 FE_RUNG_ERROR_SD = 0.15
 FE_RUNG_COST_S = 300.0         # declared cost per action before any run has been timed
+
+# --- Leak holon: hydraulic rungs ----------------------------------------------------------
+# The middle and high rungs predict a regurgitant volume from the deployed geometry and grade
+# it with the published VARC-3 threshold (moderate or worse: >= 30 mL/beat). What is declared
+# here is only the model-form error of that prediction, as a standard deviation of log(RVol):
+# PLACEHOLDERS until compared against echocardiographic grading in a cohort.
+PVL_0D_SIGMA_LOG = 0.7          # 0D strips ignore circumferential flow and jet geometry
+PVL_CFD_SIGMA_LOG = 0.4         # 3D CFD: remaining error is the skirt and leaflet modelling
+PVL_RVOL_FLOOR_ML = 0.05        # below this the prediction is "no leak"

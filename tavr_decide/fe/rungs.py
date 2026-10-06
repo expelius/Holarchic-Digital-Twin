@@ -39,7 +39,18 @@ def conduction_link(wall_p90_mm: float) -> float:
 
 
 def pvl_link(gap_area_mm2: float) -> float:
+    """Superseded as a decision input: a band-wise gap is not a leak path (see cfd.channel).
+    Kept for reporting and backward comparison."""
     return float(_sigmoid(_logit(C.PVL_RISK_AT_CUTOFF) + C.FE_PVL_SLOPE_PER_MM2 * (gap_area_mm2 - C.FE_PVL_G0_MM2)))
+
+
+def pvl_risk_from_rvol(rvol_ml: float, sigma_log: float) -> float:
+    """P(regurgitant volume >= 30 mL/beat, VARC-3 moderate or worse) under a lognormal
+    model-form error of the hydraulic prediction."""
+    from scipy.special import ndtr
+    from ..cfd.lumped import RVOL_GRADES_ML
+    r = max(float(rvol_ml), C.PVL_RVOL_FLOOR_ML)
+    return float(ndtr((np.log(r) - np.log(RVOL_GRADES_ML[0])) / sigma_log))
 
 
 @dataclass
@@ -53,6 +64,8 @@ class FEEngine:
     gap_band: tuple[float, float] = (-3.0, 1.0)
     cache: dict = field(default_factory=dict)
     runs: list = field(default_factory=list)
+    hemo_kwargs: dict = field(default_factory=dict)       # dp_mmhg, t_diastole_s: patient values when known
+    gap_maps: dict = field(default_factory=dict)
 
     # ---- the works -----------------------------------------------------------------------
     def depth_of(self, action: Action) -> float:
@@ -76,6 +89,13 @@ class FEEngine:
             g = sealing_gap(res, z_band=self.gap_band)
             out.update(wall_p90_mm=w["p90_mm"], wall_max_mm=w["max_mm"], gap_area_mm2=g["area_mm2"],
                        gap_max_mm=g["max_gap_mm"], inflow_expansion=float(res.expansion_ratio[0]))
+            from ..cfd.channel import gap_map
+            from ..cfd.lumped import pvl_lumped
+            gm = gap_map(res)
+            h0 = pvl_lumped(gm, **self.hemo_kwargs)
+            out.update(rvol_0d_ml=h0.rvol_ml, eroa_0d_cm2=h0.eroa_cm2, grade_0d=h0.grade,
+                       channel_open_fraction=gm.open_fraction, max_reynolds_0d=h0.max_reynolds)
+            self.gap_maps[key] = gm
         self.cache[key] = out
         self.runs.append(out)
         return out
@@ -116,6 +136,6 @@ class FEEngine:
                  self._corrected(cp, conduction_link, "wall_p90_mm"))])
         pvl = Holon("paravalvular leak", "pvl", creaon, [
             Rung("upper-LVOT calcium proxy", "low", 0.001, pp.error_sd, pp.predict),
-            Rung("FE sealing gap", "high", cost, C.FE_RUNG_ERROR_SD,
-                 self._corrected(pp, pvl_link, "gap_area_mm2"))])
+            Rung("FE channel + 0D hydraulics", "mid", cost, C.FE_RUNG_ERROR_SD,
+                 self._corrected(pp, lambda rv: pvl_risk_from_rvol(rv, C.PVL_0D_SIGMA_LOG), "rvol_0d_ml"))])
         return {"conduction": cond, "pvl": pvl}
