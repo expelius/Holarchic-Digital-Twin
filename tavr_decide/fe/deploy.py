@@ -141,10 +141,14 @@ def run_deployment(spec: FrameSpec, vessel_radius_mm: float | None, workdir: str
             vessel_final = vpos[max(vpos)][:, 1:4]
     else:
         dep, drift = np.full(n_bands, np.nan), float("nan")
-    return DeploymentResult(run["normal"], run["wall_s"], len(A.nodes), int(sum(len(e) for e in A.parts.values())),
+    result = DeploymentResult(run["normal"], run["wall_s"], len(A.nodes), int(sum(len(e) for e in A.parts.values())),
                             times, mean_r, centres, free, dep, drift, workdir,
                             {"landing_radius_mm": landing, "inflow_z": inflow_z, "crimp_radius_mm": crimp,
                              "frame_E_MPa": p.frame_E_MPa, "vessel_E_MPa": p.vessel_E_MPa,
                              "calcium_E_MPa": p.calcium_E_MPa, "n_calcified": int(calcified.sum()) if calcified is not None else 0,
                              "contact_penalty": p.contact_penalty, "vessel_penalty": p.vessel_penalty},
                             frame, vmesh, frame_final, vessel_final, calcified)
+    import pickle
+    with open(workdir / "result.pkl", "wb") as fh:          # so that downstream holons (CFD) can reload it
+        pickle.dump(result, fh)
+    return result
