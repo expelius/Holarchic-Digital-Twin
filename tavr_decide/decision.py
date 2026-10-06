@@ -41,6 +41,9 @@ class Utility:
     infeasible_penalty: float = 10.0
     recapture_penalty: dict[int, float] = field(default_factory=lambda: dict(C.RECAPTURE_PENALTY))
 
+    def weight(self, outcome: str) -> float:
+        return {"conduction": self.w_conduction, "pvl": self.w_pvl}.get(outcome, 1.0)
+
     def of(self, risks: dict[str, np.ndarray], action: Action, samples: dict[str, np.ndarray]) -> np.ndarray:
         u = np.zeros_like(next(iter(risks.values())))
         if "conduction" in risks:
@@ -228,3 +231,120 @@ def select_modules(anatomy: Anatomy, grammar: ReversibilityGrammar, state: str,
                       "voc": vocs[o_best], "pea_before": res.pea})
         active[o_best] = remaining.pop(o_best)
     return res, trace
+
+
+# ---------------------------------------------------------------------------------------
+# Holarchic selection: tolerance contracts handed down to holons
+# ---------------------------------------------------------------------------------------
+
+def tolerance_contracts(result: DecisionResult, utility: Utility, eta: float | None = None) -> dict[str, float]:
+    """How much declared error each outcome's holon may carry before the decision flips.
+
+    For an additive utility, an action-specific error e in outcome ``o`` moves that
+    action's utility by w_o * e. The recommendation flips when the runner-up gains the
+    expected-utility margin m. With errors of standard deviation s and correlation rho
+    across actions, the best-minus-runner-up error difference has standard deviation
+    s * sqrt(2 (1 - rho)); requiring P(flip) <= 1 - eta gives
+
+        s_tol(o) = m / ( w_o * z_eta * sqrt(2 (1 - rho)) ).
+
+    This is the formal statement that a holon's required fidelity is defined one level
+    up, by the decision, not by the holon itself.
+    """
+    from math import sqrt
+    eta = result.eta if eta is None else eta
+    z = _z(eta)
+    out: dict[str, float] = {}
+    for o, m in result.modules.items():
+        rho = float(getattr(m, "error_corr", 0.5))
+        w = utility.weight(o)
+        denom = w * z * sqrt(max(2.0 * (1.0 - rho), 1e-9))
+        out[o] = float(result.margin / denom) if np.isfinite(result.margin) else float("inf")
+    return out
+
+
+def _z(p: float) -> float:
+    """Standard-normal quantile without scipy (Acklam's rational approximation)."""
+    if p <= 0.5:
+        return 0.0
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00]
+    plow = 0.02425
+    if p > 1 - plow:
+        q = np.sqrt(-2 * np.log(1 - p))
+        return float(-(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1))
+    q = p - 0.5
+    r = q * q
+    return float((((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1))
+
+
+def holarchic_select(anatomy: Anatomy, grammar: ReversibilityGrammar, state: str,
+                     holons: dict[str, "Module"], utility: Utility, eta: float = 0.95,
+                     n: int = 4000, seed: int = 0, max_rounds: int = 3):
+    """Delegated selection (benchmark condition C6).
+
+    Round: evaluate with the holons' current rungs -> derive one tolerance contract per
+    outcome from the decision margin -> each holon meets its contract on its own,
+    recursively through its parts -> re-evaluate. Stops when the stability threshold is
+    met, when nothing changed, or when a holon reports it cannot meet its contract
+    (then the honest output is "observe, do not compute").
+
+    Returns ``(result, trace)``; each trace entry carries the contracts and the holons'
+    narratives for that round.
+    """
+    trace: list[dict] = []
+    for h in holons.values():
+        if hasattr(h, "reset"):
+            h.reset()
+    res = evaluate(anatomy, grammar, state, holons, utility, n=n, seed=seed, eta=eta)
+    if res.pea < eta:
+        # Ceiling reachable by computation alone: stability if every module error were
+        # resolved. If even that is below eta, the instability is irreducible by any
+        # physics (anatomy, depth achievement) and the honest move is to observe.
+        ceiling = _pea_without_module_error(anatomy, grammar, state, holons, utility, n, seed, eta)
+        if ceiling < eta:
+            trace.append({"round": 0, "pea_before": res.pea, "pea_ceiling_by_computation": ceiling,
+                          "contracts": {}, "unmet": list(holons), "reason": "irreducible by computation: observe",
+                          "narratives": {o: (h.narrate() if hasattr(h, "narrate") else h.name) for o, h in holons.items()}})
+            return res, trace
+    for _round in range(max_rounds):
+        if res.pea >= eta:
+            break
+        contracts = tolerance_contracts(res, utility, eta)
+        before = {o: getattr(h, "active", None) for o, h in holons.items()}
+        unmet = []
+        for o, h in holons.items():
+            if hasattr(h, "meet") and not h.meet(contracts[o]):
+                unmet.append(o)
+        after = {o: getattr(h, "active", None) for o, h in holons.items()}
+        trace.append({"round": _round + 1, "pea_before": res.pea, "contracts": contracts,
+                      "unmet": unmet,
+                      "narratives": {o: (h.narrate() if hasattr(h, "narrate") else h.name) for o, h in holons.items()}})
+        if after == before:
+            break
+        res = evaluate(anatomy, grammar, state, holons, utility, n=n, seed=seed, eta=eta)
+        if unmet:
+            break
+    return res, trace
+
+
+class _ZeroErrorView:
+    """Module view with the same physics and zero declared error (for the computation ceiling)."""
+    def __init__(self, m):
+        self._m = m
+        self.name, self.outcome, self.fidelity, self.cost_s = m.name, m.outcome, m.fidelity, m.cost_s
+        self.error_sd = 0.0
+        self.error_corr = getattr(m, "error_corr", 0.5)
+
+    def predict(self, samples, action):
+        return self._m.predict(samples, action)
+
+
+def _pea_without_module_error(anatomy, grammar, state, modules, utility, n, seed, eta) -> float:
+    views = {o: _ZeroErrorView(m) for o, m in modules.items()}
+    return evaluate(anatomy, grammar, state, views, utility, n=n, seed=seed, eta=eta).pea

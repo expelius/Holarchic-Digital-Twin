@@ -1,6 +1,23 @@
-# TAVR-Decide
+# Holarchic Digital Twin for TAVR
 
-**An open decision layer for staged transcatheter aortic valve deployment.**
+**An open platform that unites structural and physical simulation with a decision layer,
+organised as a holarchy. Package: `tavr_decide`.**
+
+The twin applies hierarchy theory to a multiphysics decision problem. Each physical
+stage is a **holon** in Koestler's sense, with Patten's portals as read by Allen &
+Giampietro (2014): a *creaon* (what it accepts), a *genon* (what it emits), a coded half
+(its fidelity ladder, calibration and contract) that constrains the works (the solver
+that runs), optional *parts* (sub-holons), and a *narrative* to the level above. The
+meaning of a holon lives one level up: how accurate it must be is not its own business
+but a **tolerance contract** handed down by the decision that uses it. The orchestrator
+never looks inside a holon.
+
+What this is meant to beat, measurably: a two-day closed-service turnaround, a single
+geometry without uncertainty, no notion of procedural time or reversible actions, device
+models locked behind manufacturer agreements, and a structural accuracy bar of ±2 mm in
+≥95 % of cases on 89 patients (the only FDA-authorised TAVR simulation). The first five we
+already do differently; the last one is the number to beat on a public cohort, and it is
+not beaten yet.
 
 Commercial TAVR planning tools predict a configuration from a pre-procedural CT and return
 a report hours or days later. They do not know which actions are still available, how
@@ -24,6 +41,7 @@ here is a clinical claim.
 pip install -e ".[dev]"
 python -m pytest -q
 python examples/synthetic_patient.py
+python examples/holarchic_patient.py
 ```
 
 The example evaluates a synthetic patient at the ~80 % checkpoint of a self-expanding
@@ -50,6 +68,12 @@ writes `reports/synthetic_patient.md`.
   this repository exists to test.
 * **Irreversibility first.** Compute is worth most right before an irreversible edge. In the
   reversible window, observing the patient competes with simulating the patient.
+* **Delegation, not central control.** `holarchic_select` derives one tolerance contract per
+  outcome from the decision margin (`s_tol = m / (w · z_η · √(2(1−ρ)))`) and hands it to
+  the holon, which meets it with its cheapest sufficient rung and delegates to its parts
+  the same way. A holon that cannot meet its contract says so: the honest answer is then
+  to observe, not to compute. This is benchmark condition C6 against the centrally
+  selected C5.
 
 ## Layout
 
@@ -58,7 +82,9 @@ tavr_decide/
   grammar.py      reversibility grammar; Evolut-like and balloon-expandable instances
   anatomy.py      Uncertain measurements, sampling, shifted copies for certificates
   modules.py      Module protocol; ConductionProxy (dMSID), PVLProxy (upper-LVOT calcium), PluggableModule
-  decision.py     evaluate, margin_certificate, evppi_of_module, value_of_computation, select_modules
+  holon.py        Holon (creaon, genon, rungs, parts, meet, narrate), Rung, leaf
+  decision.py     evaluate, margin_certificate, evppi_of_module, value_of_computation, select_modules,
+                  tolerance_contracts, holarchic_select
   report.py       markdown report
   calibration.py  every placeholder coefficient with its provenance
 examples/         runnable end-to-end example
