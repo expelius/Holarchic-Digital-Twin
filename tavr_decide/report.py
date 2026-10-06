@@ -47,8 +47,21 @@ def render_markdown(result: DecisionResult, certificates: list[dict | None] | No
             if t.get("activated"):
                 lines.append(f"- Activated **{t['activated']}** for `{t['outcome']}` "
                              f"(value of computation {t['voc']:.4f}; stability before {t['pea_before']:.3f})")
+            elif "contracts" in t:                      # holarchic (delegated) round
+                pea = t.get("pea_before", float("nan"))
+                if t.get("reason"):
+                    lines.append(f"- Round {t['round']}: {t['reason']} (stability {pea:.3f}; "
+                                 f"ceiling by computation {t.get('pea_ceiling_by_computation', float('nan')):.3f})")
+                else:
+                    c = ", ".join(f"{k}: {v:.3f}" for k, v in t["contracts"].items())
+                    unmet = f"; unmet: {', '.join(t['unmet'])}" if t.get("unmet") else ""
+                    lines.append(f"- Round {t['round']}: tolerance contracts {{{c}}} (stability before {pea:.3f}){unmet}")
+                    for o, nar in t.get("narratives", {}).items():
+                        if isinstance(nar, dict):
+                            lines.append(f"  - `{o}` ← {nar['holon']}: rung *{nar['rung']}* [{nar['fidelity']}], "
+                                         f"error {nar['error_sd']}, cost {nar['cost_s']:.0f} s")
             else:
-                lines.append(f"- Stopped: {t.get('reason')} (stability {t['pea']:.3f})")
+                lines.append(f"- Stopped: {t.get('reason')} (stability {t.get('pea', float('nan')):.3f})")
         lines.append("")
     lines.append("---")
     lines.append("*Coefficients of the low-fidelity proxies are declared placeholders anchored to "

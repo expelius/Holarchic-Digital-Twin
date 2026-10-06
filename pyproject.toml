@@ -25,6 +25,9 @@ dev = ["pytest>=7"]
 dicom = ["SimpleITK>=2.3", "pydicom>=2.4"]
 segmentation = ["totalsegmentator>=2.4"]
 
+[project.scripts]
+tavr-decide = "tavr_decide.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["tavr_decide*"]
 
