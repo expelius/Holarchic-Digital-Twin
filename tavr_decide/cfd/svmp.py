@@ -164,12 +164,13 @@ def read_face_flux(workdir: str | Path, face: str) -> np.ndarray:
     cands = sorted(wd.rglob("B_*Velocity_flux.txt"))
     if not cands:
         raise FileNotFoundError("no B_*Velocity_flux.txt found; did the run finish?")
-    lines = [l.split() for l in cands[-1].read_text().splitlines() if l.strip()]
-    header = lines[0]
-    if face not in header:
-        raise KeyError(f"face '{face}' not in {header}")
+    lines = [l.split() for l in cands[-1].read_text().splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    header = next((l for l in lines if l[:2] == ["step", "time"]), None)
+    if header is None or face not in header:
+        raise KeyError(f"face '{face}' not in the flux file header {header}")
     j = header.index(face)
-    return np.array([float(l[j]) for l in lines[1:]])
+    rows = [l for l in lines if l[0].isdigit()]
+    return np.array([float(l[j]) for l in rows])
 
 
 @dataclass

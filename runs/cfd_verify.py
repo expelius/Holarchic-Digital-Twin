@@ -14,6 +14,6 @@ m = channel_mesh(g, n_h=n_h)
 rm = (r + h / 2) / 10
 q_an = 2 * np.pi * rm * (h / 10) ** 3 * dp * MMHG / (12 * MU * L / 10)
 q_0d = pvl_lumped(g, dp_mmhg=dp).flow_ml_s
-res = pvl_cfd(m, out, CFDParams(dp_mmhg=dp, dt_s=2e-3, n_steps=150, save_every=150), nproc=4, timeout_s=3600)
+res = pvl_cfd(m, out, CFDParams(dp_mmhg=dp, dt_s=2e-3, n_steps=int(sys.argv[3]) if len(sys.argv) > 3 else 150, save_every=500), nproc=4, timeout_s=3600)
 print(f"elements {len(m.elems)}  wall {res.wall_s:.0f} s  steady change {res.steady_rel_change:.2e}")
-print(f"analytic {q_an:.5f} mL/s   0D {q_0d:.5f}   CFD {res.flow_ml_s:.5f}   CFD/analytic {res.flow_ml_s / q_an:.4f}")
+print(f"analytic {q_an:.5f} mL/s   0D {q_0d:.5f}   CFD {res.flow_ml_s:.5f}   CFD/analytic {res.flow_ml_s / q_an:.4f}   1-1/N^2 = {1 - 1 / n_h ** 2:.4f}")
