@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "TAVR-Decide: an open decision layer for staged transcatheter aortic valve deployment"
+version: 0.1.0
+date-released: 2026-10-06
+license: Apache-2.0
+repository-code: "https://github.com/expelius/Holarchic-Digital-Twin"
+abstract: "Reversibility grammar, uncertainty-aware low-fidelity proxies, action-stability probability, margin certificates in physical units and value-of-computation gated activation of higher-fidelity physics modules for TAVR decisions."
