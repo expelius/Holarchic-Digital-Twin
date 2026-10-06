@@ -84,6 +84,13 @@ tavr_decide/
   modules.py      Module protocol; ConductionProxy (dMSID), PVLProxy (upper-LVOT calcium), PluggableModule
   geometry.py     Geometry holon: CT + lumen mask + landmarks -> Anatomy with uncertainty
                   (annulus plane/section, upper-LVOT calcium, coronary heights; Slicer markups; TotalSegmentator wrapper)
+  frame.py        parametric self-expanding and balloon-expandable frames
+  fe/lattice.py   conforming hex mesh of the frame lattice; structured tube mesh
+  fe/vessel.py    patient-specific landing zone from the lumen segmentation, calcified elements flagged
+  fe/febio.py     FEBio 4 input (sleeve crimp + release with contact), runner, log parser
+  fe/deploy.py    run_deployment(spec, vessel | radius, inflow_z) -> deployed frame and wall
+  fe/post.py      sealing gap and wall displacement below the membranous septum
+  fe/rungs.py     FEEngine: cached deployments exposed as the holons' high-fidelity rungs
   holon.py        Holon (creaon, genon, rungs, parts, meet, narrate), Rung, leaf
   decision.py     evaluate, margin_certificate, evppi_of_module, value_of_computation, select_modules,
                   tolerance_contracts, holarchic_select
@@ -92,6 +99,22 @@ tavr_decide/
 examples/         runnable end-to-end example
 tests/            pytest suite
 ```
+
+## Finite-element rung (needs FEBio)
+
+`python -m examples.fe_patient` goes from a CT phantom to a decision with physics: geometry
+holon, patient-specific wall with calcium, two FEBio deployments (about 2.5 minutes each on
+8 cores with Pardiso), sealing gap and wall displacement below the membranous septum, and
+the delegated decision. FEBio 4.13 must be built with Intel MKL **2024.2** (MKL 2026 removed
+a routine FEBio still uses) and the two `-fopenmp` linker flags; on Windows it is called
+through WSL.
+
+State of the physics, stated plainly: the mechanics are solved and converge under mesh
+refinement in expansion ratio; nitinol is a neo-Hookean solid with a placeholder modulus
+(no superelastic plateau); the wall has uniform thickness and no leaflets; and the links
+from mechanical index to risk are unfitted. Until they are fitted the finite-element rung
+declares a larger error than the published proxies, so no tolerance contract selects it
+for accuracy: its indices are reported as mechanics, not as risk.
 
 ## Plugging in real physics
 

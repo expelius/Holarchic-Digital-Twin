@@ -150,21 +150,30 @@ def lattice_hex_mesh(spec: FrameSpec, n_along: int = 4, n_thick: int = 1) -> Hex
     return HexMesh(nodes, elems, outer, inner, jn[:, :, C].copy())
 
 
-def cylinder_hex_mesh(r_inner: float, thickness: float, z0: float, z1: float,
-                      n_theta: int = 24, n_z: int = 6, n_r: int = 1) -> HexMesh:
-    """Structured thick-walled cylinder (vessel segment or crimping sleeve)."""
-    th = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
-    zs = np.linspace(z0, z1, n_z + 1)
-    rs = np.linspace(r_inner, r_inner + thickness, n_r + 1)
+def tube_hex_mesh(inner_radius: np.ndarray, centers: np.ndarray, zs: np.ndarray, thickness: float,
+                  n_r: int = 1) -> HexMesh:
+    """Structured thick-walled tube with an arbitrary inner surface.
+
+    ``inner_radius[iz, it]`` is the lumen radius about ``centers[iz]`` (x, y) at height
+    ``zs[iz]`` and angle ``2 pi it / n_theta``; the wall is extruded ``thickness`` outward
+    along the in-plane radial direction. ``junction_center_nodes[iz, it]`` holds the inner
+    surface node indices (used for boundary conditions and post-processing).
+    """
+    n_zp, n_theta = inner_radius.shape
+    n_z = n_zp - 1
+    th = 2 * np.pi * np.arange(n_theta) / n_theta
 
     def nid(ir, it, iz):
         return (ir * (n_z + 1) + iz) * n_theta + (it % n_theta)
 
     nodes = np.zeros(((n_r + 1) * (n_z + 1) * n_theta, 3))
-    for ir, r in enumerate(rs):
-        for iz, z in enumerate(zs):
-            for it, a in enumerate(th):
-                nodes[nid(ir, it, iz)] = (r * np.cos(a), r * np.sin(a), z)
+    for ir in range(n_r + 1):
+        for iz in range(n_z + 1):
+            rho = inner_radius[iz] + thickness * ir / n_r
+            idx = [nid(ir, it, iz) for it in range(n_theta)]
+            nodes[idx, 0] = centers[iz, 0] + rho * np.cos(th)
+            nodes[idx, 1] = centers[iz, 1] + rho * np.sin(th)
+            nodes[idx, 2] = zs[iz]
     elems, inner, outer = [], [], []
     for ir in range(n_r):
         for iz in range(n_z):
@@ -173,13 +182,20 @@ def cylinder_hex_mesh(r_inner: float, thickness: float, z0: float, z1: float,
                 hi = [nid(ir + 1, it, iz), nid(ir + 1, it + 1, iz), nid(ir + 1, it + 1, iz + 1), nid(ir + 1, it, iz + 1)]
                 elems.append(lo + hi)
                 if ir == 0:
-                    inner.append(lo[::-1])             # normal -r (into the lumen)
+                    inner.append(lo[::-1])             # normal into the lumen
                 if ir == n_r - 1:
-                    outer.append(hi)                   # normal +r
+                    outer.append(hi)                   # normal outward
     elems = np.array(elems, dtype=int)
     vol = hex_signed_volumes(nodes, elems)
     if (vol < 0).any():
         e = elems[vol < 0]
         elems[vol < 0] = e[:, [0, 3, 2, 1, 4, 7, 6, 5]]
-    centers = np.array([[nid(0, it, iz) for it in range(n_theta)] for iz in range(n_z + 1)])
-    return HexMesh(nodes, elems, np.array(outer, dtype=int), np.array(inner, dtype=int), centers)
+    inner_ids = np.array([[nid(0, it, iz) for it in range(n_theta)] for iz in range(n_z + 1)])
+    return HexMesh(nodes, elems, np.array(outer, dtype=int), np.array(inner, dtype=int), inner_ids)
+
+
+def cylinder_hex_mesh(r_inner: float, thickness: float, z0: float, z1: float,
+                      n_theta: int = 24, n_z: int = 6, n_r: int = 1) -> HexMesh:
+    """Structured thick-walled cylinder (vessel segment or crimping sleeve)."""
+    zs = np.linspace(z0, z1, n_z + 1)
+    return tube_hex_mesh(np.full((n_z + 1, n_theta), float(r_inner)), np.zeros((n_z + 1, 2)), zs, thickness, n_r)

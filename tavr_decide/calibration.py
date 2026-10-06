@@ -45,3 +45,21 @@ RECAPTURE_PENALTY = {0: 0.0, 1: 0.0, 2: 0.10, 3: 0.20}
 # --- Self-expanding sizing table (nominal annulus diameter ranges, mm) -----------------
 # Approximate ranges for an Evolut-like platform; used only to compute percent oversizing.
 SE_SIZING_MM = {23: (18.0, 20.0), 26: (20.0, 23.0), 29: (23.0, 26.0), 34: (26.0, 30.0)}
+
+# --- Links from finite-element indices to risk (high-fidelity rungs) --------------------
+# The mechanistic direction is established (more wall displacement below the membranous
+# septum -> more conduction risk; more sealing gap -> more leak). The magnitudes below are
+# PLACEHOLDERS: they have not been fitted to any cohort and exist so that the decision
+# logic can be exercised end to end.
+FE_COND_W0_MM = 0.5            # wall displacement (p90) at which conduction risk equals DMSID_RISK_AT_CUTOFF
+FE_COND_SLOPE_PER_MM = 2.0     # logit change per mm of wall displacement
+FE_PVL_G0_MM2 = 3.0            # sealing-gap area at which leak risk equals PVL_RISK_AT_CUTOFF
+FE_PVL_SLOPE_PER_MM2 = 0.3     # logit change per mm^2 of gap area
+# Declared error of the FE-corrected rung. It is deliberately LARGER than the proxies' until the
+# links above are fitted: the first end-to-end run (phantom, depth 5 vs 3 mm) showed that with
+# unfitted links the rung reduces a risk difference of ~0.3 given by the published dMSID proxy
+# to ~0.02 and turns a stable decision (0.955) into a coin flip (0.51). The mechanics are solved;
+# the outcome link is not. With this value no tolerance contract selects the rung for accuracy,
+# and its indices are reported as mechanics, not as risk, until calibration against a cohort.
+FE_RUNG_ERROR_SD = 0.15
+FE_RUNG_COST_S = 300.0         # declared cost per action before any run has been timed

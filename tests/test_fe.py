@@ -71,7 +71,8 @@ def test_deployment_input_is_well_formed(tmp_path):
     # the sleeve's radial map has one value per sleeve node and unit norm
     ux = [float(n.text) for n in root.find("MeshData/NodeData[@name='sleeve_ux']")]
     uy = [float(n.text) for n in root.find("MeshData/NodeData[@name='sleeve_uy']")]
-    assert len(ux) == len(A.node_sets["sleeve_all"]) and np.allclose(np.hypot(ux, uy), 1.0, atol=1e-6)
+    # the sleeve map is the node position, i.e. uniform in-plane scaling about the axis
+    assert len(ux) == len(A.node_sets["sleeve_all"]) and np.hypot(ux, uy).min() == pytest.approx(13.45, abs=1e-3)
     assert "min_residual" in f.read_text(encoding="ISO-8859-1")
 
 
@@ -117,3 +118,64 @@ def test_ring_deployment_reaches_equilibrium_between_vessel_and_free_radius(tmp_
     assert res.equilibrium_drift_mm < 0.01, "the frame must be at rest once the sleeve has left"
     crimped = res.mean_radius_t[np.argmin(np.abs(res.times - 1.0))]
     assert crimped < 11.0, "the crimped frame must clear the vessel before release"
+
+
+# --- post-processing on a synthetic deployed state (no solver) ---------------------------------
+def _synthetic_result(wall_bulge_mm=0.0, push_mm=0.0):
+    from tavr_decide.fe.deploy import DeploymentResult
+    from tavr_decide.fe.lattice import tube_hex_mesh
+    spec = FrameSpec("ring", "self-expanding", 12, 2, 6.0, [(0, 11.0), (1, 11.0)], 0.30, 0.25)
+    frame = lattice_hex_mesh(spec, n_along=2)
+    frame.nodes[:, 2] -= 3.0                                   # frame spans z in [-3, 3]
+    nt = 48
+    R = np.full((9, nt), 11.125)                               # wall touching the frame's outer surface
+    vessel = tube_hex_mesh(R, np.zeros((9, 2)), np.linspace(-8, 8, 9), 2.0, 1)
+    vfinal = vessel.nodes.copy()
+    th = np.arctan2(vfinal[:, 1], vfinal[:, 0]); r = np.linalg.norm(vfinal[:, :2], axis=1)
+    bulge = wall_bulge_mm * (np.abs(th) < np.deg2rad(20))      # a 40-degree sector where the wall stands off
+    rr = r + bulge + push_mm * (vfinal[:, 2] <= -4.0)          # uniform outward push below z = -4
+    vfinal[:, 0], vfinal[:, 1] = rr * np.cos(th), rr * np.sin(th)
+    return DeploymentResult(True, 1.0, 0, 0, np.array([2.0]), np.array([11.0]), np.zeros(1), np.ones(1), np.ones(1),
+                            0.0, None, {}, frame, vessel, frame.nodes.copy(), vfinal, None)
+
+
+def test_sealing_gap_is_zero_when_conforming_and_matches_a_known_sector():
+    from tavr_decide.fe.post import sealing_gap
+    assert sealing_gap(_synthetic_result(), z_band=(-3, 1), tol_mm=0.05)["area_mm2"] == pytest.approx(0.0, abs=1e-6)
+    g = sealing_gap(_synthetic_result(wall_bulge_mm=1.0), z_band=(-3, 1), tol_mm=0.0)
+    expected = np.deg2rad(40) * 0.5 * ((11.125 + 1.0) ** 2 - 11.125 ** 2)     # annular sector of 40 degrees
+    assert g["area_mm2"] == pytest.approx(expected, rel=0.15) and g["max_gap_mm"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_wall_displacement_reads_the_push_below_the_given_height():
+    from tavr_decide.fe.post import wall_displacement
+    w = wall_displacement(_synthetic_result(push_mm=0.4), z_max=-4.0)
+    assert w["p90_mm"] == pytest.approx(0.4, abs=1e-6) and w["n"] > 0
+    assert wall_displacement(_synthetic_result(push_mm=0.4), z_max=-20.0)["n"] == 0
+    assert wall_displacement(_synthetic_result(), z_max=-4.0)["max_mm"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_patient_vessel_recovers_radius_ellipse_and_calcium_location():
+    from tests.test_geometry import phantom, landmarks, Z_ANN, SP, SHAPE
+    from tavr_decide.geometry import fit_plane, Volume
+    from tavr_decide.fe.vessel import vessel_from_lumen
+    ct, lumen, _, (cx, cy) = phantom()
+    lm = landmarks(cx, cy)
+    plane = fit_plane(np.array(lm.nadirs), toward=np.array([cx, cy, Z_ANN + 20])).with_x_toward(np.array([cx + 50, cy, Z_ANN]))
+    pv = vessel_from_lumen(lumen, plane, z_range=(-12, 10), n_theta=48, n_z=11, n_r=2, ct=ct)
+    assert pv.inner_radius.mean() == pytest.approx(11.0, abs=0.15)
+    assert hex_signed_volumes(pv.mesh.nodes, pv.mesh.elems).min() > 0
+    ce = pv.mesh.nodes[pv.mesh.elems[pv.calcified]].mean(1)
+    assert len(ce) > 0 and np.abs(np.degrees(np.arctan2(ce[:, 1], ce[:, 0]))).max() < 20 and ce[:, 2].max() < 0
+    i, j, _k = np.indices(SHAPE)
+    ell = ((((i * SP - cx) / 13.0) ** 2 + ((j * SP - cy) / 10.0) ** 2) <= 1).astype(np.float32)
+    pe = vessel_from_lumen(Volume(ell, lumen.affine), plane, z_range=(-6, 6), n_theta=48, n_z=4, n_r=1)
+    assert pe.inner_radius[2, 0] == pytest.approx(13.0, abs=0.2) and pe.inner_radius[2, 12] == pytest.approx(10.0, abs=0.2)
+
+
+def test_fe_links_are_monotone_and_anchored():
+    from tavr_decide.fe.rungs import conduction_link, pvl_link
+    import tavr_decide.calibration as C
+    assert conduction_link(C.FE_COND_W0_MM) == pytest.approx(C.DMSID_RISK_AT_CUTOFF)
+    assert conduction_link(1.5) > conduction_link(0.1)
+    assert pvl_link(C.FE_PVL_G0_MM2) == pytest.approx(C.PVL_RISK_AT_CUTOFF) and pvl_link(10.0) > pvl_link(0.0)

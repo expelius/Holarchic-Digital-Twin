@@ -121,6 +121,17 @@ class Plane:
     def to_world(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return self.center + np.outer(a, self.u) + np.outer(b, self.v)
 
+    def with_x_toward(self, point_world: np.ndarray) -> "Plane":
+        """Same plane with the in-plane x axis pointing toward ``point_world`` (projected).
+        Gives angles an anatomical meaning, e.g. 0 degrees at the non-coronary cusp nadir."""
+        d = np.asarray(point_world, dtype=float) - self.center
+        d = d - (d @ self.normal) * self.normal
+        n = np.linalg.norm(d)
+        if n < 1e-9:
+            return self
+        u = d / n
+        return Plane(self.center, self.normal, u, np.cross(self.normal, u))
+
 
 def fit_plane(points: np.ndarray, toward: np.ndarray | None = None) -> Plane:
     """Least-squares plane through >= 3 points; normal oriented toward ``toward`` if given."""

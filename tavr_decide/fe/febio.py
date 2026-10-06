@@ -38,9 +38,13 @@ class DeploymentParams:
     frame_nu: float = 0.30
     vessel_E_MPa: float = 1.0
     vessel_nu: float = 0.45
+    calcium_E_MPa: float = 20.0        # PLACEHOLDER: calcified tissue, literature spans ~10-60 MPa
+    calcium_nu: float = 0.30
     sleeve_r0: float = 13.2            # initial inner radius of the sleeve (just outside the frame)
     sleeve_r_crimp: float = 9.5        # inner radius at the end of step 1
     sleeve_r_final: float = 15.0       # inner radius at the end of step 2 (beyond the vessel)
+    sleeve_scale_crimp: float | None = None   # uniform in-plane scaling of the sleeve at the end of step 1
+    sleeve_scale_final: float | None = None   # ... and at the end of step 2 (None: derived from the radii above)
     steps_per_stage: int = 20
     contact_penalty: float = 0.01       # sleeve-frame; 1.0 diverges at first touch (stiff tiny frame elements)
     vessel_penalty: float = 0.001       # frame-vessel; auto-penalty is scaled by the stiff frame, the wall is soft
@@ -56,11 +60,20 @@ class Assembly:
     node_sets: dict[str, np.ndarray] = field(default_factory=dict)
 
 
-def assemble(frame: HexMesh, vessel: HexMesh, sleeve: HexMesh) -> Assembly:
+def assemble(frame: HexMesh, vessel: HexMesh, sleeve: HexMesh, calcified: np.ndarray | None = None) -> Assembly:
+    """Concatenate the three meshes. ``calcified`` (bool per vessel element) splits the wall
+    into a soft part and a calcium part that share nodes."""
     nodes, parts, ranges, surfaces = [], {}, {}, {}
     off = 0
     for name, m in (("frame", frame), ("vessel", vessel), ("sleeve", sleeve)):
-        nodes.append(m.nodes); parts[name] = m.elems + off
+        nodes.append(m.nodes)
+        E = m.elems + off
+        if name == "vessel" and calcified is not None and calcified.any():
+            if (~calcified).any():
+                parts["vessel"] = E[~calcified]
+            parts["calcium"] = E[calcified]
+        else:
+            parts[name] = E
         ranges[name] = (off, off + len(m.nodes))
         surfaces[f"{name}_outer"] = m.outer_faces + off
         surfaces[f"{name}_inner"] = m.inner_faces + off
@@ -85,8 +98,15 @@ def assemble(frame: HexMesh, vessel: HexMesh, sleeve: HexMesh) -> Assembly:
     vid = np.arange(v0, v1)
     z = X[vid, 2]
     A.node_sets["vessel_ends"] = vid[(np.isclose(z, z.min())) | (np.isclose(z, z.max()))]
-    A.node_sets["vessel_a0"] = np.concatenate([at_angle(vid, 0.0), at_angle(vid, 180.0)])
-    A.node_sets["vessel_a90"] = np.concatenate([at_angle(vid, 90.0), at_angle(vid, 270.0)])
+    # Rigid-body restraint by structured index (works for non-circular, off-axis sections):
+    # inner-surface columns at 0 and 180 degrees hold y, columns at 90 and 270 hold x.
+    inner = vessel.junction_center_nodes + v0            # (n_z+1, n_theta)
+    nt = inner.shape[1]
+    if nt % 4:
+        raise ValueError("vessel n_theta must be divisible by 4")
+    A.node_sets["vessel_a0"] = np.concatenate([inner[:, 0], inner[:, nt // 2]])
+    A.node_sets["vessel_a90"] = np.concatenate([inner[:, nt // 4], inner[:, 3 * nt // 4]])
+    A.node_sets["vessel_all"] = vid
     s0, s1 = ranges["sleeve"]
     A.node_sets["sleeve_all"] = np.arange(s0, s1)
     A.node_sets["frame_all"] = np.arange(f0, f1)
@@ -101,7 +121,9 @@ def write_deployment(path: str | Path, A: Assembly, p: DeploymentParams) -> Path
     X = A.nodes
     L: list[str] = ['<?xml version="1.0" encoding="ISO-8859-1"?>', '<febio_spec version="4.0">',
                     '  <Module type="solid"/>', "  <Material>"]
-    mats = {"frame": (p.frame_E_MPa, p.frame_nu), "vessel": (p.vessel_E_MPa, p.vessel_nu), "sleeve": (1000.0, 0.3)}
+    all_mats = {"frame": (p.frame_E_MPa, p.frame_nu), "vessel": (p.vessel_E_MPa, p.vessel_nu),
+                "calcium": (p.calcium_E_MPa, p.calcium_nu), "sleeve": (1000.0, 0.3)}
+    mats = {k: all_mats[k] for k in A.parts}
     for i, (name, (E, nu)) in enumerate(mats.items(), 1):
         L.append(f'    <material id="{i}" name="{name}_mat" type="neo-Hookean"><density>1</density><E>{E}</E><v>{nu}</v></material>')
     L += ["  </Material>", "  <Mesh>", '    <Nodes name="all">']
@@ -126,8 +148,9 @@ def write_deployment(path: str | Path, A: Assembly, p: DeploymentParams) -> Path
         L.append(f'    <SolidDomain name="{name}" mat="{name}_mat"/>')
     L += ["  </MeshDomains>", "  <MeshData>"]
     sl = A.node_sets["sleeve_all"]
-    th = np.arctan2(X[sl, 1], X[sl, 0])
-    for comp, vals in (("x", np.cos(th)), ("y", np.sin(th))):
+    # displacement = (s(t) - 1) * (x, y): uniform in-plane scaling about the axis, so a sleeve
+    # that follows the frame's profile compresses every level by the same ratio
+    for comp, vals in (("x", X[sl, 0]), ("y", X[sl, 1])):
         L.append(f'    <NodeData name="sleeve_u{comp}" node_set="sleeve_all">')
         L += [f'      <node lid="{k + 1}">{v:.8f}</node>' for k, v in enumerate(vals)]
         L.append("    </NodeData>")
@@ -167,17 +190,19 @@ def write_deployment(path: str | Path, A: Assembly, p: DeploymentParams) -> Path
                 "<max_retries>12</max_retries><opt_iter>12</opt_iter><aggressiveness>1</aggressiveness></time_stepper>",
                 "      </Control>"]
 
+    sc = p.sleeve_scale_crimp if p.sleeve_scale_crimp is not None else p.sleeve_r_crimp / p.sleeve_r0
+    sf = p.sleeve_scale_final if p.sleeve_scale_final is not None else p.sleeve_r_final / p.sleeve_r0
     L += ["  <Step>", '    <step id="1" name="crimp">'] + control() + ["    </step>",
           '    <step id="2" name="release">'] + control() + ["      <Contact>"]
     L += ["  " + s for s in contact("vessel_contact", "frame_vessel", p.vessel_penalty)]
     L += ["      </Contact>", "    </step>", "  </Step>", "  <LoadData>",
           '    <load_controller id="1" name="sleeve_radius" type="loadcurve"><interpolate>LINEAR</interpolate>'
           "<extend>CONSTANT</extend><points>"
-          f"<pt>0,0</pt><pt>1,{p.sleeve_r_crimp - p.sleeve_r0}</pt><pt>2,{p.sleeve_r_final - p.sleeve_r0}</pt>"
+          f"<pt>0,0</pt><pt>1,{sc - 1.0}</pt><pt>2,{sf - 1.0}</pt>"
           "</points></load_controller>", "  </LoadData>", "  <Output>",
           '    <plotfile type="febio"><var type="displacement"/><var type="stress"/><var type="contact pressure"/></plotfile>',
           '    <logfile><node_data data="x;y;z" file="frame_nodes.txt" node_set="frame_all"/>'
-          '<node_data data="x;y;z" file="vessel_nodes.txt" node_set="vessel_ends"/></logfile>',
+          '<node_data data="x;y;z" file="vessel_nodes.txt" node_set="vessel_all"/></logfile>',
           "  </Output>", "</febio_spec>"]
     path = Path(path)
     path.write_text("\n".join(L), encoding="ISO-8859-1")
