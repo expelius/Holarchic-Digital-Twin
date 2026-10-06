@@ -60,7 +60,7 @@ def run_deployment(spec: FrameSpec, vessel_radius_mm: float | None, workdir: str
                    vessel=None, inflow_z: float = 0.0,
                    vessel_z: tuple[float, float] | None = None, vessel_thickness_mm: float = 2.0,
                    n_along: int = 2, n_theta: int = 48, n_z_vessel: int = 6, n_r_vessel: int = 2,
-                   gap_mm: float = 0.3, crimp_radius_mm: float | None = None, n_bands: int = 6,
+                   gap_mm: float = 0.3, crimp_radius_mm: float | None = None, crimp_margin_mm: float = 1.5, n_bands: int = 6,
                    params: DeploymentParams | None = None, timeout_s: int = 7200, threads: int = 4) -> DeploymentResult:
     """Crimp ``spec`` with a sleeve and release it into the landing zone.
 
@@ -96,7 +96,7 @@ def run_deployment(spec: FrameSpec, vessel_radius_mm: float | None, workdir: str
                                   n_theta=n_theta, n_z=n_z_vessel, n_r=n_r_vessel)
         r_min = landing = float(vessel_radius_mm)
         r_vessel_outer = vessel_radius_mm + vessel_thickness_mm
-    crimp = crimp_radius_mm if crimp_radius_mm is not None else r_min - 1.5
+    crimp = crimp_radius_mm if crimp_radius_mm is not None else r_min - crimp_margin_mm
     # The sleeve follows the frame's outer profile and is scaled uniformly, so every level
     # is compressed by the same ratio. A cylindrical sleeve crushes the flared outflow much
     # more than the inflow and makes the lattice unstable once the mesh stops locking.

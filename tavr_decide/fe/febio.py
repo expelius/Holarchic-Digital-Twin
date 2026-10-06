@@ -94,6 +94,14 @@ def assemble(frame: HexMesh, vessel: HexMesh, sleeve: HexMesh, calcified: np.nda
     for k in ("frame_a0", "frame_a90", "frame_a180"):
         if len(A.node_sets[k]) == 0:
             raise ValueError("frame needs junction centres at 0/90/180 degrees: use n_cells_circ divisible by 4")
+    # The delivery system also holds the far end against rotation: restrain the last even
+    # (non-offset) junction ring in-plane at 0/180 (y) and 90 (x), leaving radial motion free.
+    # This removes the torsional bifurcation of the lattice under deep crimp.
+    top = len(frame.junction_center_nodes) - 1
+    top = top if top % 2 == 0 else top - 1
+    jt = frame.junction_center_nodes[top] + f0
+    A.node_sets["frame_top_a0"] = np.concatenate([at_angle(jt, 0.0), at_angle(jt, 180.0)])
+    A.node_sets["frame_top_a90"] = at_angle(jt, 90.0)
     v0, v1 = ranges["vessel"]
     vid = np.arange(v0, v1)
     z = X[vid, 2]
@@ -161,6 +169,8 @@ def write_deployment(path: str | Path, A: Assembly, p: DeploymentParams) -> Path
         L.append(f'    <bc name="{name}" node_set="{ns}" type="zero displacement">{d}</bc>')
 
     zero("frame_a0", "frame_a0", "yz"); zero("frame_a90", "frame_a90", "xz"); zero("frame_a180", "frame_a180", "y")
+    if len(A.node_sets.get("frame_top_a0", [])) and len(A.node_sets.get("frame_top_a90", [])):
+        zero("frame_top_a0", "frame_top_a0", "y"); zero("frame_top_a90", "frame_top_a90", "x")
     zero("vessel_ends", "vessel_ends", "z"); zero("vessel_a0", "vessel_a0", "y"); zero("vessel_a90", "vessel_a90", "x")
     zero("sleeve_z", "sleeve_all", "z")
     for comp in "xy":

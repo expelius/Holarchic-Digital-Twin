@@ -10,3 +10,6 @@ reports/*.md
 
 # FEBio run outputs
 runs/*/
+
+# datasets
+data/
