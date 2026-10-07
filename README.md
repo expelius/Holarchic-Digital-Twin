@@ -100,6 +100,27 @@ examples/         runnable end-to-end example
 tests/            pytest suite
 ```
 
+## Using it from 3D Slicer
+
+The `slicer/TAVRDecide` module puts the workflow in a panel: pick the CT and the lumen
+segmentation, place the three annulus nadirs and the two coronary ostia (one button starts
+placement and labels them), draw a line along the membranous septum, choose planning or
+"at ~80 % deployment", press **Decide**. The report shows the measured geometry, the
+recommended action, its action-stability probability and the margin certificates; the
+annulus plane is added to the scene for visual checking.
+
+1. Install 3D Slicer 5.12 or later.
+2. Install the twin into Slicer's Python once:
+   `PythonSlicer -m pip install -e <this repository>` (or `git+https://github.com/expelius/Holarchic-Digital-Twin`).
+3. Windows: double-click `slicer/launch_windows.bat`. Elsewhere: add `slicer/TAVRDecide`
+   under Edit > Application Settings > Modules > Additional module paths.
+
+Headless test (builds the panel, runs the phantom case, presses Decide, saves a screenshot):
+`Slicer --no-splash --no-main-window --additional-module-paths slicer/TAVRDecide --python-script slicer/run_slicer_test.py out.txt`.
+
+The panel uses the millisecond rungs; finite-element and CFD rungs run from the command
+line for now.
+
 ## Finite-element rung (needs FEBio)
 
 `python -m examples.fe_patient` goes from a CT phantom to a decision with physics: geometry
