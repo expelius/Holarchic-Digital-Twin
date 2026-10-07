@@ -221,7 +221,8 @@ def write_deployment(path: str | Path, A: Assembly, p: DeploymentParams) -> Path
 
 # --- running ---------------------------------------------------------------------------------
 FEBIO_WSL = "/opt/src/FEBio/build/bin/febio4"
-MKL_LIBS = "/opt/intel/oneapi/mkl/2024.2/lib:/opt/intel/oneapi/compiler/2026.1/lib"
+MKL_LIBS = os.environ.get("TAVR_MKL_LIBS", "/opt/intel/oneapi/mkl/2024.2/lib:/opt/intel/oneapi/compiler/2024.2/lib")
+WSL_DISTRO = os.environ.get("TAVR_WSL_DISTRO", "Ubuntu-24.04")
 
 
 def _to_wsl(p: Path) -> str:
@@ -230,7 +231,7 @@ def _to_wsl(p: Path) -> str:
     return f"/mnt/{m.group(1).lower()}/{m.group(2)}" if m else s
 
 
-def run_febio(feb: str | Path, threads: int = 4, timeout_s: int = 7200, distro: str = "Ubuntu-24.04") -> dict:
+def run_febio(feb: str | Path, threads: int = 4, timeout_s: int = 7200, distro: str = WSL_DISTRO) -> dict:
     """Run FEBio on ``feb``. On Windows it goes through WSL; on Linux it calls ``febio4``
     from PATH (or ``FEBIO`` env var). Returns termination status, wall time and log tail."""
     feb = Path(feb)

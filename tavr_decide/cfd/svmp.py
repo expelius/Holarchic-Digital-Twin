@@ -22,6 +22,7 @@ from .channel import ChannelMesh
 from .lumped import MMHG, MU, RHO, T_DIASTOLE_S, grade_of
 
 SVMP_WSL = "/opt/src/svMultiPhysics/build/svMultiPhysics-build/bin/svmultiphysics"
+WSL_DISTRO = os.environ.get("TAVR_WSL_DISTRO", "Ubuntu-24.04")
 
 
 # --- VTK XML writers (ASCII; what svMultiPhysics' VTK reader expects) ----------------------------
@@ -141,7 +142,7 @@ def _to_wsl(p: Path) -> str:
     return f"/mnt/{m.group(1).lower()}/{m.group(2)}" if m else s
 
 
-def run_case(workdir: str | Path, nproc: int = 4, timeout_s: int = 7200, distro: str = "Ubuntu-24.04") -> dict:
+def run_case(workdir: str | Path, nproc: int = 4, timeout_s: int = 7200, distro: str = WSL_DISTRO) -> dict:
     wd = Path(workdir)
     t0 = time.time()
     if os.name == "nt":
@@ -149,8 +150,11 @@ def run_case(workdir: str | Path, nproc: int = 4, timeout_s: int = 7200, distro:
                f"cd '{_to_wsl(wd)}' && mpirun --allow-run-as-root --oversubscribe -np {nproc} {SVMP_WSL} solver.xml > svmp.log 2>&1"]
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout_s)
     else:
+        mpi = ["mpirun", "--oversubscribe", "-np", str(nproc)]
+        if hasattr(os, "geteuid") and os.geteuid() == 0:          # Open MPI refuses root unless told
+            mpi.insert(1, "--allow-run-as-root")
         with open(wd / "svmp.log", "w") as fh:
-            proc = subprocess.run(["mpirun", "-np", str(nproc), os.environ.get("SVMP", "svmultiphysics"), "solver.xml"],
+            proc = subprocess.run(mpi + [os.environ.get("SVMP", "svmultiphysics"), "solver.xml"],
                                   cwd=wd, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s)
     return {"returncode": proc.returncode, "wall_s": time.time() - t0}
 
