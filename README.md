@@ -100,6 +100,20 @@ examples/         runnable end-to-end example
 tests/            pytest suite
 ```
 
+## Installing the physics (Ubuntu 24.04 or WSL2)
+
+```bash
+wget https://raw.githubusercontent.com/expelius/Holarchic-Digital-Twin/main/env/setup_ubuntu.sh
+sudo bash setup_ubuntu.sh            # add --no-segmentation to skip TotalSegmentator
+```
+
+Builds FEBio (with Intel MKL 2024.2 for Pardiso) and svMultiPhysics at pinned commits,
+creates a Python environment with this package, and checks the result with real runs.
+Tested end to end on 2026-10-07 in a fresh Ubuntu 24.04 under WSL2: FEBio normal
+termination with Pardiso, 56/56 tests (including a real FEBio deployment), CFD Poiseuille
+check 0.9353 of analytic at 3 layers (the documented value); 51 minutes on 8 cores. Needs
+about 12 GB of free disk.
+
 ## Using it from 3D Slicer
 
 The `slicer/TAVRDecide` module puts the workflow in a panel: pick the CT and the lumen
