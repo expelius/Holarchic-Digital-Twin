@@ -132,8 +132,24 @@ annulus plane is added to the scene for visual checking.
 Headless test (builds the panel, runs the phantom case, presses Decide, saves a screenshot):
 `Slicer --no-splash --no-main-window --additional-module-paths slicer/TAVRDecide --python-script slicer/run_slicer_test.py out.txt`.
 
-The panel uses the millisecond rungs; finite-element and CFD rungs run from the command
-line for now.
+**Segment automatically** runs TotalSegmentator in the background. Without a licence it
+segments the aorta only, which stops at the annulus (measured on a public CT: lowest aortic
+voxel 0.4 mm above the annulus plane), so the LVOT must be completed by hand. With the free
+academic TotalSegmentator licence it adds the left ventricle, the LVOT, the three cusps, the
+annulus and the sinotubular junction, and places the three nadirs automatically (lowest
+point of each cusp along the annulus normal; to be reviewed by the operator).
+
+**Physics (background)** exports the case and runs `tavr-decide physics`: one FEBio
+deployment per action, the paravalvular channel, 0D and CFD leak, and the decision; the
+panel polls the job and loads its report. Review mode runs every rung for every action.
+
+The report opens with a clinical summary in Spanish or English: the recommendation in
+words, how stable it is, whether more physics or better observation would settle it, and
+what change in each measurement would flip it.
+
+Command line equivalents:
+`tavr-decide segment CT --workdir W [--licence N]` and
+`tavr-decide physics CT --mask L --landmarks J --workdir W [--force] [--no-cfd]`.
 
 ## Finite-element rung (needs FEBio)
 

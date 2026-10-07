@@ -136,3 +136,16 @@ def test_holarchic_select_reports_unmet_contract_instead_of_pretending():
                                {"conduction": coarse, "pvl": coarse_p}, Utility(), eta=0.99, n=1500)
     assert res.needs_more_information
     assert tr and tr[0]["unmet"], "an unmeetable contract must be reported, not hidden"
+
+
+def test_contracts_spend_only_what_the_anatomy_leaves():
+    g = evolut_like_grammar(size_in_situ=26, retarget_depths=(3.0,))
+    hol = {"conduction": conduction_holon(), "pvl": pvl_holon()}
+    r = evaluate(anatomy(ms=4.0, observed=4.0), g, "assess", hol, Utility(), n=1500, seed=0)
+    free = tolerance_contracts(r, Utility(), 0.95)
+    floored = tolerance_contracts(r, Utility(), 0.95, var_floor=0.5 * (r.margin / _z(0.95)) ** 2, split=True)
+    assert all(floored[o] < free[o] for o in free)
+    # half the budget spent by anatomy and shared by two holons: each gets 1/2 of the free tolerance
+    assert floored["pvl"] == pytest.approx(free["pvl"] * 0.5, rel=1e-6)
+    gone = tolerance_contracts(r, Utility(), 0.95, var_floor=2 * (r.margin / _z(0.95)) ** 2)
+    assert all(v == 0.0 for v in gone.values())

@@ -237,29 +237,42 @@ def select_modules(anatomy: Anatomy, grammar: ReversibilityGrammar, state: str,
 # Holarchic selection: tolerance contracts handed down to holons
 # ---------------------------------------------------------------------------------------
 
-def tolerance_contracts(result: DecisionResult, utility: Utility, eta: float | None = None) -> dict[str, float]:
+def tolerance_contracts(result: DecisionResult, utility: Utility, eta: float | None = None,
+                        var_floor: float = 0.0, split: bool = False) -> dict[str, float]:
     """How much declared error each outcome's holon may carry before the decision flips.
 
     For an additive utility, an action-specific error e in outcome ``o`` moves that
     action's utility by w_o * e. The recommendation flips when the runner-up gains the
-    expected-utility margin m. With errors of standard deviation s and correlation rho
-    across actions, the best-minus-runner-up error difference has standard deviation
-    s * sqrt(2 (1 - rho)); requiring P(flip) <= 1 - eta gives
+    expected-utility margin m. Requiring P(flip) <= 1 - eta bounds the standard deviation
+    of the best-minus-runner-up utility difference by m / z_eta. Part of that budget is
+    already spent by what no model can remove (anatomy, depth achievement): ``var_floor``,
+    the variance of the difference with every module error set to zero. What remains,
+    B = (m / z_eta)^2 - var_floor, is what the holons may spend; with ``split`` it is shared
+    equally by the k outcomes. An error of standard deviation s and cross-action
+    correlation rho contributes w^2 s^2 2 (1 - rho), so
 
-        s_tol(o) = m / ( w_o * z_eta * sqrt(2 (1 - rho)) ).
+        s_tol(o) = sqrt( B / k ) / ( w_o * sqrt(2 (1 - rho)) ).
 
-    This is the formal statement that a holon's required fidelity is defined one level
-    up, by the decision, not by the holon itself.
+    With var_floor = 0 and k = 1 this is the margin-only contract m / (w z sqrt(2(1-rho))).
+    A non-positive B means no fidelity suffices: the contract is 0 and every holon reports
+    it unmet. This is the formal statement that a holon's required fidelity is defined one
+    level up, by the decision, not by the holon itself.
     """
     from math import sqrt
     eta = result.eta if eta is None else eta
     z = _z(eta)
     out: dict[str, float] = {}
+    if not np.isfinite(result.margin):
+        return {o: float("inf") for o in result.modules}
+    budget = (result.margin / z) ** 2 - float(var_floor) if z > 0 else float("inf")
+    k = len(result.modules) if split else 1
     for o, m in result.modules.items():
         rho = float(getattr(m, "error_corr", 0.5))
         w = utility.weight(o)
-        denom = w * z * sqrt(max(2.0 * (1.0 - rho), 1e-9))
-        out[o] = float(result.margin / denom) if np.isfinite(result.margin) else float("inf")
+        if budget <= 0:
+            out[o] = 0.0
+            continue
+        out[o] = float(sqrt(budget / k) / (w * sqrt(max(2.0 * (1.0 - rho), 1e-9))))
     return out
 
 
@@ -302,20 +315,25 @@ def holarchic_select(anatomy: Anatomy, grammar: ReversibilityGrammar, state: str
         if hasattr(h, "reset"):
             h.reset()
     res = evaluate(anatomy, grammar, state, holons, utility, n=n, seed=seed, eta=eta)
+    var_floor = 0.0
     if res.pea < eta:
         # Ceiling reachable by computation alone: stability if every module error were
         # resolved. If even that is below eta, the instability is irreducible by any
         # physics (anatomy, depth achievement) and the honest move is to observe.
-        ceiling = _pea_without_module_error(anatomy, grammar, state, holons, utility, n, seed, eta)
-        if ceiling < eta:
-            trace.append({"round": 0, "pea_before": res.pea, "pea_ceiling_by_computation": ceiling,
+        ceil_res = _without_module_error(anatomy, grammar, state, holons, utility, n, seed, eta)
+        if ceil_res.pea < eta:
+            trace.append({"round": 0, "pea_before": res.pea, "pea_ceiling_by_computation": ceil_res.pea,
                           "contracts": {}, "unmet": list(holons), "reason": "irreducible by computation: observe",
                           "narratives": {o: (h.narrate() if hasattr(h, "narrate") else h.name) for o, h in holons.items()}})
             return res, trace
+        # variance of the best-minus-runner-up difference that no model can remove
+        if res.second is not None:
+            d = ceil_res.sample_utility[res.best.key] - ceil_res.sample_utility[res.second.key]
+            var_floor = float(np.var(d))
     for _round in range(max_rounds):
         if res.pea >= eta:
             break
-        contracts = tolerance_contracts(res, utility, eta)
+        contracts = tolerance_contracts(res, utility, eta, var_floor=var_floor, split=True)
         before = {o: getattr(h, "active", None) for o, h in holons.items()}
         unmet = []
         for o, h in holons.items():
@@ -345,6 +363,10 @@ class _ZeroErrorView:
         return self._m.predict(samples, action)
 
 
-def _pea_without_module_error(anatomy, grammar, state, modules, utility, n, seed, eta) -> float:
+def _without_module_error(anatomy, grammar, state, modules, utility, n, seed, eta) -> DecisionResult:
     views = {o: _ZeroErrorView(m) for o, m in modules.items()}
-    return evaluate(anatomy, grammar, state, views, utility, n=n, seed=seed, eta=eta).pea
+    return evaluate(anatomy, grammar, state, views, utility, n=n, seed=seed, eta=eta)
+
+
+def _pea_without_module_error(anatomy, grammar, state, modules, utility, n, seed, eta) -> float:
+    return _without_module_error(anatomy, grammar, state, modules, utility, n, seed, eta).pea
