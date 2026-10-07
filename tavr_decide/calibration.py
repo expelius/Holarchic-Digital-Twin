@@ -73,3 +73,12 @@ PVL_0D_SIGMA_LOG = 1.0          # 0D strips ignore circumferential flow and jet 
                                 # after the first CFD comparison under-predicted by x2.75 (docs/cfd_patient_ct0091.md)
 PVL_CFD_SIGMA_LOG = 0.4         # 3D CFD: remaining error is the skirt and leaflet modelling
 PVL_RVOL_FLOOR_ML = 0.05        # below this the prediction is "no leak"
+
+# Declared errors of the leak rungs in risk units, for the tolerance contracts. PLACEHOLDERS.
+# Their ORDER reflects physical content (the CFD resolves the circumferential detours the 0D
+# strips cannot), not validation: neither has been compared with echocardiography. A fixed
+# error in risk units is crude: the real error is in log(RVol) and matters only near the
+# 30 mL threshold, where a factor 2.75 can move the grade; far from it, it does not.
+PVL_0D_RUNG_ERROR_SD = 0.08
+PVL_CFD_RUNG_ERROR_SD = 0.04
+CFD_RUNG_COST_S = 1300.0        # measured: 4,376 hexes, 200 steps, 6 cores (docs/cfd_patient_ct0091.md)

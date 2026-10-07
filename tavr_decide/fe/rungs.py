@@ -66,6 +66,9 @@ class FEEngine:
     runs: list = field(default_factory=list)
     hemo_kwargs: dict = field(default_factory=dict)       # dp_mmhg, t_diastole_s: patient values when known
     gap_maps: dict = field(default_factory=dict)
+    cfd_kwargs: dict = field(default_factory=dict)        # n_h, nproc, CFDParams fields
+    cfd_cache: dict = field(default_factory=dict)
+    cfd_runs: list = field(default_factory=list)
 
     # ---- the works -----------------------------------------------------------------------
     def depth_of(self, action: Action) -> float:
@@ -100,10 +103,46 @@ class FEEngine:
         self.runs.append(out)
         return out
 
+    def cfd_solve(self, action: Action) -> dict:
+        """CFD of the paravalvular channel of this action's deployment (runs the deployment
+        first if needed). Shares the deployment with the conduction holon and the 0D rung."""
+        fe = self.solve(action)
+        key = fe["key"]
+        if key in self.cfd_cache:
+            return self.cfd_cache[key]
+        out = {"key": key, "normal": False, "wall_s": 0.0}
+        if fe["normal"] and key in self.gap_maps:
+            from ..cfd.channel import channel_mesh
+            from ..cfd.svmp import CFDParams, pvl_cfd
+            kw = dict(self.cfd_kwargs)
+            n_h, nproc = kw.pop("n_h", 4), kw.pop("nproc", 6)
+            params = CFDParams(**{"dt_s": 2e-4, "n_steps": 200, "save_every": 100, **kw})
+            if self.hemo_kwargs.get("dp_mmhg") is not None:
+                params.dp_mmhg = self.hemo_kwargs["dp_mmhg"]
+            try:
+                mesh = channel_mesh(self.gap_maps[key], n_h=n_h)
+            except ValueError:                         # sealed: no fluid path, no leak
+                out.update(normal=True, rvol_cfd_ml=0.0, flow_cfd_ml_s=0.0, sealed=True)
+            else:
+                wd = Path(fe["workdir"]) / "cfd"
+                kwargs = {"t_diastole_s": self.hemo_kwargs["t_diastole_s"]} if "t_diastole_s" in self.hemo_kwargs else {}
+                c = pvl_cfd(mesh, wd, params, nproc=nproc, **kwargs)
+                out.update(normal=c.steady_rel_change < 0.02, wall_s=c.wall_s, rvol_cfd_ml=c.rvol_ml,
+                           flow_cfd_ml_s=c.flow_ml_s, grade_cfd=c.grade, steady_rel_change=c.steady_rel_change,
+                           n_elems=int(len(mesh.elems)))
+        self.cfd_cache[key] = out
+        self.cfd_runs.append(out)
+        return out
+
     @property
     def measured_cost_s(self) -> float:
         done = [r["wall_s"] for r in self.runs]
         return float(np.mean(done)) if done else C.FE_RUNG_COST_S
+
+    @property
+    def measured_cfd_cost_s(self) -> float:
+        done = [r["wall_s"] for r in self.cfd_runs if r.get("wall_s")]
+        return float(np.mean(done)) if done else C.CFD_RUNG_COST_S
 
     # ---- the genon: risk per sampled world ------------------------------------------------
     def _nominal(self) -> dict[str, np.ndarray]:
@@ -116,9 +155,11 @@ class FEEngine:
             s["observed_depth_mm"] = a.observed_depth_mm.mean
         return {k: np.array([float(v)]) for k, v in s.items()}
 
-    def _corrected(self, proxy, link, index_key: str):
+    def _corrected(self, proxy, link, index_key: str, solver=None):
+        solver = solver or self.solve
+
         def fn(samples: dict[str, np.ndarray], action: Action) -> np.ndarray:
-            r = self.solve(action)
+            r = solver(action)
             lo = proxy.predict(samples, action)
             if not r["normal"] or index_key not in r or not np.isfinite(r[index_key]):
                 return lo                                  # the works failed: fall back to the proxy, visibly
@@ -127,15 +168,20 @@ class FEEngine:
             return np.clip(lo + (hi_nom - lo_nom), 0.0, 1.0)
         return fn
 
-    def holons(self, creaon: tuple[str, ...] = ("ms_length_mm", "annulus_diameter_mm", "upper_lvot_calcium_mm3")) -> dict[str, Holon]:
+    def holons(self, creaon: tuple[str, ...] = ("ms_length_mm", "annulus_diameter_mm", "upper_lvot_calcium_mm3"),
+               with_cfd: bool = True) -> dict[str, Holon]:
         cp, pp = ConductionProxy(), PVLProxy()
         cost = self.measured_cost_s
         cond = Holon("conduction", "conduction", creaon, [
             Rung("dMSID proxy", "low", 0.001, cp.error_sd, cp.predict),
             Rung("FE wall displacement below MS", "high", cost, C.FE_RUNG_ERROR_SD,
                  self._corrected(cp, conduction_link, "wall_p90_mm"))])
-        pvl = Holon("paravalvular leak", "pvl", creaon, [
-            Rung("upper-LVOT calcium proxy", "low", 0.001, pp.error_sd, pp.predict),
-            Rung("FE channel + 0D hydraulics", "mid", cost, C.FE_RUNG_ERROR_SD,
-                 self._corrected(pp, lambda rv: pvl_risk_from_rvol(rv, C.PVL_0D_SIGMA_LOG), "rvol_0d_ml"))])
+        rungs = [Rung("upper-LVOT calcium proxy", "low", 0.001, pp.error_sd, pp.predict),
+                 Rung("FE channel + 0D hydraulics", "mid", cost, C.PVL_0D_RUNG_ERROR_SD,
+                      self._corrected(pp, lambda rv: pvl_risk_from_rvol(rv, C.PVL_0D_SIGMA_LOG), "rvol_0d_ml"))]
+        if with_cfd:
+            rungs.append(Rung("FE channel + 3D CFD", "high", cost + self.measured_cfd_cost_s, C.PVL_CFD_RUNG_ERROR_SD,
+                              self._corrected(pp, lambda rv: pvl_risk_from_rvol(rv, C.PVL_CFD_SIGMA_LOG),
+                                              "rvol_cfd_ml", solver=self.cfd_solve)))
+        pvl = Holon("paravalvular leak", "pvl", creaon, rungs)
         return {"conduction": cond, "pvl": pvl}

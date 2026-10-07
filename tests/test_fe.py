@@ -187,3 +187,31 @@ def test_pvl_risk_from_rvol_is_anchored_at_the_varc3_threshold():
     assert pvl_risk_from_rvol(1.0, 0.7) < 0.01 and pvl_risk_from_rvol(120.0, 0.7) > 0.95
     assert pvl_risk_from_rvol(0.0, 0.7) == pvl_risk_from_rvol(0.05, 0.7)       # floor, no log(0)
     assert pvl_risk_from_rvol(15.0, 0.4) < pvl_risk_from_rvol(15.0, 0.7)        # tighter model, sharper grading
+
+
+def test_leak_holon_has_three_rungs_and_the_cfd_rung_reads_its_own_solve():
+    from types import SimpleNamespace
+    from tavr_decide import Anatomy, Uncertain, evolut_like_grammar
+    from tavr_decide.fe.rungs import FEEngine, pvl_risk_from_rvol
+    import tavr_decide.calibration as C
+    anat = Anatomy(Uncertain(22.0, 0.6), Uncertain(4.0, 1.0), Uncertain(20.0, 5.0), observed_depth_mm=Uncertain(4.0, 0.8))
+    eng = FEEngine(anat, vessel=SimpleNamespace(), workdir=".")
+    act = evolut_like_grammar(size_in_situ=29, retarget_depths=(3.0,)).actions("assess")[0]
+    key = (29, 4.0)
+    eng.cache[key] = {"key": key, "normal": True, "wall_s": 200.0, "rvol_0d_ml": 1.1, "wall_p90_mm": 0.2}
+    eng.runs.append(eng.cache[key])
+    eng.cfd_cache[key] = {"key": key, "normal": True, "wall_s": 1200.0, "rvol_cfd_ml": 40.0}
+    eng.cfd_runs.append(eng.cfd_cache[key])
+    hol = eng.holons()
+    pvl = hol["pvl"]
+    assert [r.fidelity for r in pvl.rungs] == ["low", "mid", "high"]
+    assert pvl.rungs[0].cost_s < pvl.rungs[1].cost_s < pvl.rungs[2].cost_s
+    assert pvl.rungs[2].cost_s == pytest.approx(1400.0)
+    assert pvl.rungs[2].error_sd < pvl.rungs[1].error_sd
+    nominal = eng._nominal()
+    pvl.active = 1; mid = float(pvl.predict(nominal, act)[0])
+    pvl.active = 2; high = float(pvl.predict(nominal, act)[0])
+    assert mid == pytest.approx(pvl_risk_from_rvol(1.1, C.PVL_0D_SIGMA_LOG), abs=1e-9)
+    assert high == pytest.approx(pvl_risk_from_rvol(40.0, C.PVL_CFD_SIGMA_LOG), abs=1e-9)
+    assert high > 0.5 > mid
+    assert [r.fidelity for r in eng.holons(with_cfd=False)["pvl"].rungs] == ["low", "mid"]
